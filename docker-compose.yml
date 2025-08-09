@@ -1,42 +1,50 @@
-networks:
-  main:
-    name: ${PROJECT_TAG}.main
+volumes:
+  gitlab-ce-docker:
+    name: gitlab-ce-docker
+  gitlab-runner-docker:
+    name: gitlab-runner-docker
+  staging-docker:
+    name: staging-docker
+  staging-user:
+    name: staging-user
 
 services:
-  gitlab-ce:
-    image: gitlab/gitlab-ce:latest
-    container_name: ${PROJECT_TAG}.gitlab-ce
-    hostname: ${GITLAB_EXTERNAL_URL}
-    restart: always
-    networks:
-      - main
+  gitlab-ce-vps:
+    image: simple-vps
+    container_name: gitlab-ce-vps
+    privileged: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      - 80:80
-      - 443:443
-      - 22:22
-    environment:
-      GITLAB_ROOT_EMAIL: ${GITLAB_ROOT_EMAIL}
-      GITLAB_ROOT_PASSWORD: ${GITLAB_ROOT_PASSWORD}
-      GITLAB_OMNIBUS_CONFIG: |
-        external_url 'http://${GITLAB_EXTERNAL_URL}'
-        gitlab_kas['env']['OWN_PRIVATE_API_URL'] = 'grpcs://${GITLAB_EXTERNAL_URL}:8155'
+      - ${GITLAB_CE_PORT}:${GITLAB_CE_PORT}
+      - ${GITLAB_CE_REGISTRY_PORT}:${GITLAB_CE_REGISTRY_PORT}
     volumes:
-      - ./gitlab-ce/config:/etc/gitlab
-      - ./gitlab-ce/data:/var/opt/gitlab
-      - ./gitlab-ce/logs:/var/log/gitlab
-    shm_size: 256m
-
-  gitlab-runner:
-    image: gitlab/gitlab-runner:alpine
-    container_name: ${PROJECT_TAG}.gitlab-runner
-    restart: always
-    network_mode: host
-    environment:
-      CACHE_VOLUME: ${PROJECT_TAG}.gitlab-runner-cache
-      BUILDS_VOLUME: ${PROJECT_TAG}.gitlab-runner-builds
+      - ./gitlab-ce:/opt/gitlab-ce
+      - gitlab-ce-docker:/var/lib/docker
+    env_file:
+      - .env
+  gitlab-runner-vps:
+    image: simple-vps
+    container_name: gitlab-runner-vps
+    privileged: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      - ./gitlab-runner/config:/etc/gitlab-runner
-      - ./gitlab-runner/data:/home/gitlab-runner
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - gitlab-ce
+      - ./gitlab-runner:/opt/gitlab-runner
+      - gitlab-runner-docker:/var/lib/docker
+    env_file:
+      - .env
+  staging-vps:
+    image: simple-vps
+    container_name: staging-vps
+    privileged: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - ${STAGING_PORT}:80
+      - ${STAGING_SSH_PORT}:22
+    volumes:
+      - staging-docker:/var/lib/docker
+      - staging-user:/home/vpsuser
+    env_file:
+      - .env

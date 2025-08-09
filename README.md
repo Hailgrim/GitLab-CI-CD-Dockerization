@@ -1,48 +1,215 @@
 # GitLab CI/CD
 
-## Setup
+This repository contains an example for emulating a CI/CD pipeline.
+For demonstration purposes, GitLab will be used locally at all levels.
+In ideal conditions, the pipeline should consist of the following servers:
 
-In the `./.env` file, you can configure the initial project parameters,
-including the _root_ user data and a link to access the project.
+- A server for **GitLab CE** with the project **repository** and
+  container images in the **GitLab Container Registry**
+- A server for **GitLab Runner**, which monitors the repository state,
+  runs various pipeline stages (linters, tests, container image builds,
+  deployments to staging and production), and requires 8GB RAM, 4 CPU cores, 50GB SSD (recommended)
+- A **staging** server, where the project runs during development
+- A **production** server, where the final deployed project runs
 
-## Installation
+In resource-limited environments, GitLab CE and GitLab Runner can be hosted on the same server.
+For local development, this is not critical, so they are placed on separate servers here.
+The structure is simplified by omitting the production server
+and keeping only the staging server, since their setup is often similar.
 
-Run the command:
+## Workflow
+
+### Launching Local Servers
+
+First, build the image for the mock VPS server:
 
 ```sh
-docker compose -f docker-compose.yml up -d
+docker build -t simple-vps .
 ```
 
-Wait for GitLab to start processing the login page for your personal account.
-This process may take several minutes.
-At the same time, an error will appear in the console of the `CI-CD.gitlab-runner` container
-with the text that the `/etc/gitlab-runner/config.toml` file is missing.
-At this stage, there is nothing to worry about, everything is going according to plan.
-Next, you need to log in to your profile, create or connect an existing project,
-create a **Runner** in `Settings` > `CI/CD` > `Runners`.
-You can also create a global **Runner** in `Admin` > `CI/CD` > `Runners`.
-Once created, a page with a command to register **Runner** will be displayed.
-Next, you need to connect to the container terminal using the command:
+Once the image is built, start the servers based on it:
 
 ```sh
-docker exec -it CI-CD.gitlab-runner bash
+docker compose up -d
 ```
 
-Now you need to enter the following command in the container console,
-where the `url` and `token` elements must match those parameters
-in the command from the **Runner** registration page.
+Further configuration will be done inside the running servers.
+
+### Installing GitLab CE
+
+Install GitLab CE inside the `gitlab-ce-vps` container:
+
+```sh
+docker exec -it gitlab-ce-vps /bin/sh
+```
+
+Inside the container, run:
+
+```sh
+cd /opt/gitlab-ce && docker compose up -d
+```
+
+The installation may take about 5 minutes. Once done, visit `http://host.docker.internal:801`
+in your browser and log in with credentials from `.env` (`test@mail.com` / `PaSS_VV0rd`).
+
+### Installing GitLab Runner
+
+Connect to the GitLab Runner server terminal:
+
+```sh
+docker exec -it gitlab-runner-vps /bin/sh
+```
+
+Start the installation:
+
+```sh
+cd opt/gitlab-runner && docker compose up -d
+```
+
+### Configuring GitLab CE
+
+From the GitLab CE home page, choose **Create a project**. Select a creation method:
+
+- Import an existing project with a `.gitlab-ci.yml`
+- Or choose a template, e.g., **NodeJS Express**
+
+If importing, enable `Import sources` in:
+`Admin` → `Settings` → `General` → `Import and export settings`
+
+If the template lacks `.gitlab-ci.yml`, create it via:
+`Build` → `Pipeline editor` → `Configure Pipeline` → `Commit changes`
+
+Next, configure the Runner:
+`Settings` → `CI/CD` → `Runners` → `Project runners` → `Create project runner`
+
+- Enable **Run untagged jobs**
+- Choose Linux
+- Save the provided token for the next step
+
+### Configuring GitLab Runner
+
+Register the Runner inside `gitlab-runner-vps`:
+
+```sh
+docker exec -it gitlab-runner /bin/sh
+```
+
+Run:
 
 ```sh
 gitlab-runner register \
  --non-interactive \
- --url 'YOUR_URL' \
- --token 'YOUR_TOKEN' \
+ --url "http://host.docker.internal:801" \
+ --token "YOUR_TOKEN" \
  --executor docker \
  --docker-image alpine:latest \
  --docker-network-mode host \
- --docker-volumes "$CACHE_VOLUME:/cache" \
- --docker-volumes "$BUILDS_VOLUME:/builds"
+ --docker-volumes "/var/run/docker.sock:/var/run/docker.sock" \
+ --docker-privileged
 ```
 
-After successful registration, the error in the `CI-CD.gitlab-runner` container console should stop appearing.
-Now you can set up build, test, and deploy pipelines for projects, as well as access rights for programmers.
+**Key options:**
+
+- `--non-interactive`: avoid prompts
+- `--url`: GitLab CE URL
+- `--token`: project runner token
+- `--executor docker`: run jobs in new Docker containers
+- `--docker-network-mode host`: host networking
+- `--docker-volumes`: access to host Docker
+- `--docker-privileged`: resolve container permission issues
+
+### Configuring the Pipeline
+
+We’ll set up SSH key authentication for the staging server.
+
+From the host:
+
+```sh
+ssh vpsuser@host.docker.internal -p 222 # password: password
+```
+
+Generate SSH keys:
+
+```sh
+ssh-keygen -t rsa -b 4096 -C 'gitlab-runner' -f ~/keys-gitlab-runner
+```
+
+Add the public key:
+
+```sh
+mkdir -p ~/.ssh && cat ~/keys-gitlab-runner.pub >> ~/.ssh/authorized_keys
+```
+
+Copy the private key (e.g., via `vim`) and add it in GitLab CE under:
+`Settings` → `CI/CD` → `Variables` → `Add variable`
+
+- Name: `STAGING_SSH_KEY`
+- Value: private key
+- Visibility: `Visible`
+
+If you set a passphrase, also add `STAGING_SSH_PASSPHRASE`.
+
+### Example `.gitlab-ci.yml` (NodeJS Express)
+
+```yaml
+stages:
+  - test
+  - build
+  - deploy
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
+  IMAGE_TAG: ${CI_REGISTRY}/${CI_PROJECT_PATH}/${CI_COMMIT_REF_SLUG}
+  STAGING_HOST: host.docker.internal
+  STAGING_SSH_PORT: 222
+  STAGING_USER: vpsuser
+
+test:
+  stage: test
+  image: node:lts-alpine
+  script:
+    - npm ci && npm run test
+
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - echo ${CI_JOB_TOKEN} | docker login -u gitlab-ci-token --password-stdin ${CI_REGISTRY}
+    - docker build -t ${IMAGE_TAG} .
+    - docker push ${IMAGE_TAG}
+
+deploy:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - "which ssh-agent || ( apk update && apk add openssh )"
+    - eval $(ssh-agent -s)
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - echo 'echo $STAGING_SSH_PASSPHRASE' > ~/.ssh/tmp && chmod 700 ~/.ssh/tmp
+    - echo "$STAGING_SSH_KEY" | tr -d '\r' | DISPLAY=None SSH_ASKPASS=~/.ssh/tmp ssh-add -
+    - ssh-keyscan -p ${STAGING_SSH_PORT} ${STAGING_HOST} >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - ssh -o StrictHostKeyChecking=no -p ${STAGING_SSH_PORT} ${STAGING_USER}@${STAGING_HOST} "
+      echo ${CI_JOB_TOKEN} | docker login -u gitlab-ci-token --password-stdin ${CI_REGISTRY} &&
+      docker pull ${IMAGE_TAG} &&
+      docker rm -f myapp || true &&
+      docker run -d -p 80:5000 --restart always --name myapp ${IMAGE_TAG}"
+  only:
+    - master
+```
+
+When pushed to `master`, this triggers the pipeline.
+After completion, your app will be available at `http://host.docker.internal:802`.
+
+## Conclusion
+
+This guide covers the key stages of setting up and running a local GitLab CI/CD pipeline.
+In a real-world project, you may need additional setup for complex project structures,
+user/group management, and security policies.
+
+If you find inaccuracies or mistakes, feel free to open an issue or pull request.

@@ -1,2 +1,5 @@
-/gitlab-ce
-/gitlab-runner
+/gitlab-ce/config
+/gitlab-ce/data
+/gitlab-ce/logs
+/gitlab-runner/config
+/gitlab-runner/data
