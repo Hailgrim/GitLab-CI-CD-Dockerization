@@ -77,6 +77,9 @@ From the GitLab CE home page, choose **Create a project**. Select a creation met
 
 If importing, enable `Import sources` in
 `Admin` → `Settings` → `General` → `Import and export settings`.
+Please note that the address of the repository being created
+must contain only lowercase characters, otherwise there may be problems
+with sending images to the GitLab Container Registry.
 
 If the template lacks `.gitlab-ci.yml`, create it via
 `Build` → `Pipeline editor` → `Configure Pipeline` → `Commit changes`.
